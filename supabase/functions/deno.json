@@ -1,0 +1,5 @@
+{
+  "compilerOptions": { "strict": true },
+  "nodeModulesDir": "auto",
+  "tasks": { "test": "deno test _shared/validation_test.ts" }
+}

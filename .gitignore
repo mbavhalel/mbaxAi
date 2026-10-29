@@ -1,0 +1,14 @@
+.env*
+!.env.example
+.venv/
+node_modules/
+dist/
+supabase/.temp/
+supabase/.branches/
+*-import.sql
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+backups/
