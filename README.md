@@ -1,143 +1,204 @@
-# mbaxAi — Storeroom monitor
+# mbaxAi — Storeroom monitor on Supabase
 
-Open one HTTPS address on your phone or laptop to manage stock and see live
-temperature, humidity, and scans. The cloud server keeps running when your laptop
-is off. The dashboard is already sized for phone screens; no mobile app is needed.
+One website for your phone and laptop. Supabase stores the stock, sensor readings,
+settings, and scans, so your laptop can be off. The ESP32 sends events over HTTPS;
+a Python server, MQTT broker, and paid VM are no longer required for this version.
 
-## Free cloud hosting
+## Set it up
 
-This application needs an **always-on machine and persistent storage**. A sleeping
-free web service will miss MQTT scans and delay alerts; an ephemeral filesystem
-will lose stock data. Keep one server instance running.
+You need a Supabase project and a static website host. Supabase and Cloudflare
+Pages offer free plans, subject to their current quotas and inactivity policies.
+Free hosting does not provide an uptime guarantee. The steps below configure your
+own accounts; this repository does not create or deploy a project automatically.
 
-A possible zero-cost setup is an **Oracle Cloud Always Free VM**, a free
-**DuckDNS hostname**, and an authenticated **MQTT broker with a free allowance**
-(for example HiveMQ Cloud, if available). Check current provider terms and
-capacity before signing up. Free VMs may require card verification, may be
-unavailable or reclaimed when idle, and have no uptime guarantee. Avoid paid
-resources and upgrades if zero cost is essential. This repository does not
-create cloud accounts or provision a VM.
+### 1. Create the Supabase backend
 
-### Deploy
+Create a project at [Supabase](https://supabase.com/). In its SQL editor, run
+[`supabase/migrations/202610290001_storeroom.sql`](supabase/migrations/202610290001_storeroom.sql)
+**once**. It creates the tables, checked stock operations, membership protection,
+and live-update signal. Do not turn off row-level security.
 
-Push these code changes to your repository before cloning it on the VM.
+Create your email/password user in Supabase Authentication with a confirmed email.
+Disable public sign-ups for this private application. Then run this SQL, replacing
+only the email with the account you created:
 
-1. Create an eligible free Ubuntu VM with a public IP. Install Docker Engine and
-   the Compose plugin using [Docker's Ubuntu instructions](https://docs.docker.com/engine/install/ubuntu/).
-   Allow inbound TCP **80 and 443** in the provider firewall and Ubuntu firewall.
-   Keep SSH access restricted to your own IP. Do not expose port 8080 or SQLite.
-2. Point a hostname at that IP. You can use a free subdomain from
-   [DuckDNS](https://www.duckdns.org/); keep its IP record updated if the IP changes.
-3. On the VM, download this project and create your configuration:
+```sql
+insert into public.members(user_id)
+select id from auth.users where lower(email) = lower('YOUR_EMAIL_ADDRESS')
+on conflict (user_id) do nothing;
+```
 
-   ```sh
-   git clone https://github.com/mbavhalel/mbaxAi.git
-   cd mbaxAi
-   cp .env.example .env
-   chmod 600 .env
-   python3 -c 'import secrets; print(secrets.token_urlsafe(24))'
-   nano .env
-   ```
+Confirm that one membership exists. Repeat for other people you want to allow.
+Signing in alone does not grant access: the account must also be in `members`.
+Remove its membership to revoke access. Use Supabase's account-management tools
+for password resets; the website does not offer public registration.
 
-   In `.env`, set `DOMAIN` to your hostname without `https://`, paste the generated
-   password into `APP_PASSWORD`, and enter your MQTT broker's host, username, and
-   password. The dashboard login name is `admin`. Keep `.env` private.
+### 2. Deploy the device endpoint
 
-4. Start it:
+Install Node.js **22.12 or newer** on your computer. From this project directory:
 
-   ```sh
-   sudo docker compose up -d --build
-   sudo docker compose ps
-   sudo docker compose logs --tail=50
-   ```
+```sh
+npx supabase login
+npx supabase link --project-ref YOUR_PROJECT_REF
+```
 
-   Open `https://YOUR_HOSTNAME` on either device and sign in. Caddy obtains and
-   renews the HTTPS certificate automatically. DNS must point to the VM and both
-   ports must be reachable for this to work. Use HTTPS for every remote login.
-   The app and proxy restart automatically after a VM reboot while Docker is enabled.
+The project ref is the identifier in your Supabase project URL. Login and database
+credentials are entered through the CLI's secure prompts, never in this repository.
+If you used the SQL editor in step 1, do not also apply the same migration with
+`db push`. For CLI-managed migrations instead, use `npx supabase db push` in place
+of running the migration manually in the SQL editor.
 
-### Connect the ESP32
+Generate a long random device token and keep it securely:
 
-The ESP32 and cloud app must connect to the **same internet-reachable MQTT broker**.
-The cloud server cannot connect to a broker at `localhost` on your laptop.
-Configure the ESP32 with the broker hostname, TLS port (usually `8883`), username,
-password, and certificate verification. Set the matching values in `.env`.
-ESP32 firmware is not included in this repository, so that device change must be
-made in your firmware. Keep the ESP32 powered and connected to Wi-Fi.
+```sh
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+```
 
-Keep the existing topics and payloads:
+Copy `supabase/.env.example` to `supabase/.env.local`. Set `DEVICE_TOKEN` to that
+value (at least 32 characters). To receive Telegram stock alerts, also set your existing `TG_TOKEN` and
+`TG_CHAT_ID`; otherwise leave those two values empty. This file is ignored by Git.
+On macOS/Linux, restrict access with `chmod 600 supabase/.env.local`.
 
-| Topic | Device publishes |
+```sh
+npx supabase secrets set --env-file supabase/.env.local
+npx supabase functions deploy ingest-device --use-api --no-verify-jwt
+npx supabase functions deploy process-alerts --use-api --no-verify-jwt
+```
+
+`--no-verify-jwt` is intentional: both functions perform their own authorization.
+`--use-api` bundles on Supabase, so deployment does not require local Docker.
+The device endpoint checks the private device token. Alert processing accepts that
+same token or a verified signed-in member. Supabase provides the backend's service
+key automatically; never put it in frontend configuration or ESP32 firmware.
+
+### 3. Publish the website
+
+In [Cloudflare Pages](https://pages.cloudflare.com/), connect this GitHub repository
+and select the branch containing the Supabase version. Configure:
+
+| Setting | Value |
 | --- | --- |
-| `storeroom/climate` | `{"t":22.5,"h":50}` |
-| `storeroom/scan` | `{"uid":"04:A1:B2:C3"}` |
-| `storeroom/status` | `online` or `offline` (retained; use a last will for offline) |
+| Build command | `npm ci && npm run build` |
+| Output directory | `dist` |
+| Environment variable `NODE_VERSION` | `24` |
+| `VITE_SUPABASE_URL` | Your Supabase project URL |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Your **publishable** key (legacy `anon` key also works) |
 
-Use a private broker or topic permissions; do not use a shared anonymous public
-broker. Give the ESP32 a different client ID from `storeroom-server`.
-Stop the old laptop server before running the cloud copy; two servers must not
-process the same scans.
-The ESP32 can keep subscribing to `storeroom/alert` for forwarding alerts.
-Alternatively, set `TG_TOKEN` and `TG_CHAT_ID` in `.env` to send Telegram alerts
-directly from the server. Restart with `sudo docker compose up -d` after config changes.
+Find the URL and publishable key in your project's API/connect settings. These
+are public browser configuration; row-level security and membership protect the
+data. **Never use a secret/service-role key, device token, or Telegram token as a
+`VITE_` value.** The build rejects known secret-key formats.
 
-## Saved stock and backups
+Deploy and open the resulting HTTPS website on your phone or laptop. Sign in with
+the member account from step 1. Rebuild the website after changing its build
+variables. Serve only `dist/`, which contains the website; do not publish the whole
+checkout or any database/export files as a static directory.
 
-Docker stores the live database in the `stock_data` volume, outside the app image.
-Rebuilding or restarting the app preserves it. **Do not run `docker compose down -v`**;
-that deletes the data volumes. Exported CSVs are useful reports, but a database
-backup also preserves settings and registered products.
+### 4. Connect the ESP32
 
-Create a consistent backup, including committed data still in SQLite's WAL:
+Update the device to POST readings and scans to:
 
-```sh
-sudo docker compose exec app python backup.py /data/backup.db
-sudo docker compose cp app:/data/backup.db ./backup.db
-sudo docker compose exec app rm /data/backup.db
+```text
+https://YOUR_PROJECT_REF.supabase.co/functions/v1/ingest-device
 ```
 
-Copy `backup.db` somewhere outside the VM. Repeat regularly; the script refuses to
-overwrite an existing backup. To restore, stop the app, remove its old WAL/SHM
-sidecars, and replace `/data/storeroom.db` with the backup before starting it.
-The restored file must be writable by the container's UID/GID `10001:10001`.
-Never replace a database while the app is running.
+Send `Content-Type: application/json` and the private `X-Device-Token` header.
+Examples of request bodies:
 
-The database files already committed to this repository are legacy snapshots.
-They are excluded from Docker builds and are **not imported automatically**.
-To preserve that saved stock, run `python3 backup.py existing-stock.db --source storeroom.db`
-in the old checkout while its database and sidecars are together, then restore
-that backup on the stopped cloud app. Review those tracked snapshots for private
-data before sharing the repository publicly.
-
-## Local development
-
-Python 3.10 or newer is required. Install dependencies in a virtual environment:
-
-```sh
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
+```json
+{"type":"climate","t":22.5,"h":50}
 ```
 
-Set `APP_PASSWORD` (at least 16 characters) in your terminal environment, then run
-`python server.py`. On Windows, activate `.venv\Scripts\Activate.ps1` and use
-`$env:APP_PASSWORD = 'your-long-local-password'` in PowerShell; on macOS/Linux use
-`export APP_PASSWORD='your-long-local-password'`. Open `127.0.0.1:8080` locally
-and sign in as `admin`. `.env` is read by Docker Compose; direct Python runs use
-the terminal's environment instead.
-
-The default local database is `~/.mbaxai/storeroom.db`, so developing does not
-change the committed database snapshots. Set `DB_PATH` to choose another path.
-`MQTT_ENABLED=false` lets you develop the dashboard without a broker. For local
-MQTT, set `MQTT_HOST` and `MQTT_PORT`; use `MQTT_TLS=true` for verified TLS.
-`HTTP_HOST` defaults to loopback; `HTTP_PORT` defaults to 8080 (`PORT` overrides
-it for hosting platforms). The Docker deployment sets the correct bind address.
-
-Run the tests:
-
-```sh
-python -m unittest discover -s tests -v
+```json
+{"type":"scan","uid":"04:A1:B2:C3","event_id":"de305d54-75b4-431b-adb2-eb6b9e546014"}
 ```
 
-Tests use temporary databases and never change the saved stock. They cover login,
-stock changes, restart persistence, CSV exports, live events, and request validation.
+Generate a fresh UUID for each physical scan. **Retry the same scan with the same
+UUID** after a connection failure; it will reduce stock only once. Keep pending
+scan payloads in persistent device storage until a 2xx response, including across
+reboots. Network errors, 429, and 5xx can be retried with backoff. Fix invalid data
+or credentials on 400/401/403 before retrying. Requests are limited to 64 KiB.
+
+[`firmware/StoreroomSupabase.h`](firmware/StoreroomSupabase.h) provides a small
+Arduino ESP32 HTTPS helper; [its guide](firmware/README.md) shows where to connect
+it to your sensor/RFID code. Your actual firmware was not provided, so the helper
+must be integrated there. Use verified TLS with the current trusted CA and an
+NTP-synchronized clock. Do not use `setInsecure()`.
+
+Send climate/status events at least once a minute so the dashboard can tell that
+the device is online; a device becomes offline after 90 seconds without events.
+Keep the ESP32 powered and connected to Wi-Fi when the laptop is off. The old MQTT
+firmware will not feed the Supabase website until this device change is made.
+
+## Existing stock and backups
+
+The old SQLite snapshots remain in the repository and are not imported or changed
+automatically. Stop the old Python server, then export the database with its WAL
+and SHM sidecars together:
+
+```sh
+python3 scripts/export_sqlite.py --source storeroom.db --output stock-import.sql
+```
+
+Run the generated SQL in your Supabase project's SQL editor **after the schema
+migration and before adding new stock or device events**. It imports products,
+readings, scans, ignored tags, and settings in one transaction. It refuses a
+nonempty target and does not send historical low-stock alerts. Review any invalid
+legacy data reported by PostgreSQL rather than disabling constraints.
+
+The export contains your private stock data: do not commit or publish it. It is
+ignored by Git. Review the original already-tracked SQLite snapshots before making
+this repository public. The former Python/Docker application is available in Git
+history if needed; it is no longer the runtime for this version.
+
+Use the dashboard's CSV downloads for reports. They export all available rows using
+pagination, not just the latest page. For a complete database backup, use a
+PostgreSQL dump or your provider's backup tools; CSVs do not replace a full backup.
+Historical climate readings older than 365 days are pruned during new climate
+uploads. Device-event IDs are retained so old scan retries remain idempotent.
+Monitor storage and request usage against your project's free-plan limits.
+
+## Alerts and live updates
+
+The dashboard shows low/out-of-stock warnings without Telegram. Optional Telegram
+messages are queued transactionally when a product first becomes low or out of
+stock, and when its severity worsens. Restocking resets the alert level. Deleting
+an item or clearing stock cancels pending warnings.
+
+Device uploads and dashboard stock changes attempt to deliver pending messages.
+Delivery failures leave them queued for retry after later activity (with a short
+backoff). There is no separate always-running alert worker: without later device
+or dashboard activity, a failed notification remains pending. Telegram delivery is
+at least once; a network interruption after sending can cause a duplicate message.
+
+Live updates use a member-protected change signal, with polling as a fallback.
+Inventory rows are fetched through protected database operations. Signing out
+clears the displayed stock and cancels stale exports/responses.
+
+## Develop and test
+
+```sh
+npm ci
+cp .env.example .env.local
+# Set your project URL and PUBLIC publishable key in .env.local.
+npm run dev
+```
+
+The dev server binds to the local machine. Without configuration, the website
+shows a setup message. The production build is `npm run build`; static output is
+in `dist/`. `index.html` and `dashboard.html` both open the same app.
+
+```sh
+npm test
+npm run build
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+python3 scripts/test_database.py
+npx --yes deno@2.1.14 test --frozen --config supabase/functions/deno.json supabase/functions/_shared/validation_test.ts
+npx --yes deno@2.1.14 check --frozen --config supabase/functions/deno.json supabase/functions/ingest-device/index.ts supabase/functions/process-alerts/index.ts
+```
+
+The PostgreSQL test requires Docker and creates/removes its own disposable local
+container. It never connects to your Supabase project. It exercises the real
+migration, roles, membership checks, stock/alert transactions, concurrent scan
+retries, and the SQLite import. Browser/Edge tests use fixtures and mocks; a real
+hosted-project check still needs your project configuration and device.

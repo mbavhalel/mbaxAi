@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0e7c86">
+<title>Storeroom monitor</title>
+</head>
+<body>
+<main>
+<header>
+  <h1>Storeroom monitor</h1>
+  <div id="account" hidden><span id="signedInAs" class="sub"></span><button id="signOut" type="button">Sign out</button></div>
+</header>
+<div id="message" role="status" aria-live="polite" hidden></div>
+<section id="loginView" class="card auth-card">
+  <h2>Sign in</h2>
+  <p class="sub">Your storeroom, on any device.</p>
+  <form id="loginForm">
+    <label>Email<input id="email" type="email" autocomplete="username" required></label>
+    <label>Password<input id="password" type="password" autocomplete="current-password" required></label>
+    <p id="loginError" role="alert" hidden></p>
+    <button class="pri" id="loginButton" type="submit">Sign in</button>
+  </form>
+  <p class="sub" style="margin-top:16px">Use the account provided by your storeroom administrator.</p>
+</section>
+<div id="appView" hidden>
+<header>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <span class="pill" id="conn"><i></i><span>Connecting…</span></span>
+    <span class="pill" id="dev"><i></i><span>Device unknown</span></span>
+    <label class="sub" for="range">History</label><select id="range"><option value="1">1 hour</option><option value="24" selected>24 hours</option><option value="168">7 days</option></select>
+  </div>
+</header>
+<div class="sub" id="age" style="margin:-6px 0 12px"></div>
+<div id="alerts" role="alert"></div>
+
+<div class="grid">
+  <section class="card"><h2>Temperature</h2>
+    <div class="read"><span class="num" id="tv">--</span><span class="unit">°C</span><span class="verdict" id="tj"></span></div>
+    <div class="band"><div class="zone" id="tz"></div><div class="mark" id="tm" style="left:0"></div></div>
+    <div class="ticks"><span>0°</span><span id="tr"></span><span>40°</span></div>
+    <svg class="spark" id="ts" viewBox="0 0 240 44" preserveAspectRatio="none"></svg><div class="sub" id="tc"></div>
+  </section>
+  <section class="card"><h2>Humidity</h2>
+    <div class="read"><span class="num" id="hv">--</span><span class="unit">%</span><span class="verdict" id="hj"></span></div>
+    <div class="band"><div class="zone" id="hz"></div><div class="mark" id="hm" style="left:0"></div></div>
+    <div class="ticks"><span>0%</span><span id="hr"></span><span>100%</span></div>
+    <svg class="spark" id="hs" viewBox="0 0 240 44" preserveAspectRatio="none"></svg><div class="sub" id="hc"></div>
+  </section>
+
+  <section class="card wide"><h2>Available stock <span class="sub" id="ovt"></span></h2>
+    <div class="tiles" id="tiles"></div>
+  </section>
+
+  <section class="card wide"><h2>Manage stock</h2>
+    <div class="sub">Add each item with the ID of its tag. When that tag is scanned, that item goes down by one, and you get an alert when it reaches its alert level.</div>
+    <form class="addrow" id="addForm">
+      <input id="an" required maxlength="80" placeholder="Item name (e.g. Apples)" aria-label="Item name">
+      <input id="au" required placeholder="Tag ID (e.g. 04:A1:B2:C3)" aria-label="Tag ID">
+      <input id="as" required type="number" min="0" max="1000000" step="1" placeholder="Stock" aria-label="Starting stock">
+      <input id="al" type="number" min="0" max="1000000" step="1" placeholder="Alert at (3)" aria-label="Alert when stock is at or below">
+      <button class="pri" id="addBtn" type="submit">Add item</button>
+      <button id="lastBtn" type="button">Use last scanned tag</button>
+    </form>
+    <div class="sub" style="margin-bottom:8px">Not sure of the tag ID? Hold the tag against the reader, then press “Use last scanned tag”. To restock later, type the new total in the stock column below.</div>
+    <div style="overflow-x:auto"><table><thead><tr><th>In stock</th><th>Item</th><th>Status</th><th></th></tr></thead><tbody id="stock"></tbody></table></div>
+  </section>
+
+  <section class="card wide"><h2>Recent scans</h2><ul class="log" id="log"></ul></section>
+</div>
+
+<details class="card">
+  <summary>Settings</summary>
+  <div class="set">
+    <div><label for="c1">Temp min °C</label><input id="c1" type="number"></div>
+    <div><label for="c2">Temp max °C</label><input id="c2" type="number"></div>
+    <div><label for="c3">Humidity min %</label><input id="c3" type="number"></div>
+    <div><label for="c4">Humidity max %</label><input id="c4" type="number"></div>
+  </div>
+  <p style="display:flex;gap:8px;margin-bottom:0"><button class="pri" id="saveCfg">Save settings</button><button id="reset">Clear all stock data</button></p>
+  <p class="sub">Download everything saved: <button class="export" id="exportReadings" type="button">temperature and humidity (CSV)</button> · <button class="export" id="exportScans" type="button">scans and stock changes (CSV)</button></p>
+</details>
+
+</div>
+</main>
+<script type="module" src="/src/dashboard.js"></script>
+</body>
+</html>

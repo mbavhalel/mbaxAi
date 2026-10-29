@@ -1,5 +1,0 @@
-{$DOMAIN} {
-    reverse_proxy app:8080 {
-        flush_interval -1
-    }
-}
