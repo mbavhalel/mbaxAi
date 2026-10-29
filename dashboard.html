@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storeroom monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#e8edef;--card:#f7f9fa;--ink:#14232b;--mute:#5b6b73;--line:#c9d3d8;--ok:#0e7c86;--okbg:#d3ecee;--warn:#b86e00;--warnbg:#fbe8c8;--bad:#b83232;--badbg:#f6d6d6}
+@media (prefers-color-scheme:dark){:root{--bg:#10191e;--card:#18242b;--ink:#e6eef1;--mute:#8fa1aa;--line:#2b3b44;--ok:#4cc3cd;--okbg:#14373b;--warn:#f0b04a;--warnbg:#3d2c0e;--bad:#ff8080;--badbg:#431b1b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 15px/1.45 Barlow,system-ui,sans-serif}
+h1,h2,.num{font-family:"Barlow Semi Condensed",Barlow,sans-serif;margin:0}
+main{max-width:1100px;margin:0 auto;padding:20px 16px 48px}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin-bottom:16px}
+h1{font-size:28px;font-weight:700}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px;font-size:13px;font-weight:500;background:var(--line)}
+.pill i{width:8px;height:8px;border-radius:50%;background:var(--mute)}
+.pill.on{background:var(--okbg);color:var(--ok)}.pill.on i{background:var(--ok)}
+.pill.warn{background:var(--warnbg);color:var(--warn)}.pill.warn i{background:var(--warn)}
+.pill.bad{background:var(--badbg);color:var(--bad)}.pill.bad i{background:var(--bad)}
+button{font:500 14px Barlow,sans-serif;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 12px;cursor:pointer}
+button:hover{border-color:var(--ink)}button.pri{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+:focus-visible{outline:2px solid var(--ok);outline-offset:2px}
+#alerts{display:none;background:var(--badbg);color:var(--bad);border-left:4px solid var(--bad);padding:10px 14px;border-radius:4px;margin-bottom:16px;font-weight:500}
+.grid{display:grid;gap:16px;grid-template-columns:1fr 1fr}
+@media(max-width:760px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px}
+.card h2{font-size:18px;font-weight:600;margin-bottom:10px}
+.read{display:flex;align-items:baseline;gap:10px}
+.num{font-size:56px;font-weight:700;line-height:1}.unit{font-size:22px;color:var(--mute)}
+.verdict{font-weight:600;font-size:14px}
+.band{position:relative;height:16px;border-radius:8px;background:var(--line);margin:18px 0 4px}
+.zone{position:absolute;top:0;bottom:0;background:var(--ok);opacity:.35;border-radius:8px}
+.mark{position:absolute;top:-6px;width:4px;height:28px;border-radius:2px;background:var(--ink);transform:translateX(-2px);transition:left .6s}
+.ticks{display:flex;justify-content:space-between;font-size:12px;color:var(--mute)}
+svg.spark{width:100%;height:44px;margin-top:10px}
+.sub{font-size:13px;color:var(--mute)}
+.wide{grid-column:1/-1}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-weight:500;font-size:13px;color:var(--mute);padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle}
+td.q{width:110px}
+input.qty{width:88px;font:700 24px "Barlow Semi Condensed",sans-serif;padding:2px 8px}
+input.lw{width:56px;padding:1px 4px;font-size:13px}
+.uid{font-size:12px;color:var(--mute)}
+.chip{font-size:12px;font-weight:600;padding:2px 8px;border-radius:99px}
+.chip.ok{background:var(--okbg);color:var(--ok)}.chip.low{background:var(--warnbg);color:var(--warn)}.chip.out{background:var(--badbg);color:var(--bad)}
+.act{white-space:nowrap;text-align:right}.act button{padding:2px 9px}
+select{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+input{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;width:100%;min-width:0}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-top:10px}
+.tile{border:2px solid var(--line);border-radius:10px;padding:12px 8px;text-align:center;background:var(--bg)}
+.tile.low{border-color:var(--warn)}.tile.out{border-color:var(--bad)}
+.tile .ic{font-size:44px;line-height:1.15}.tile .tn{font-weight:600}
+.tile .tq{font:700 44px/1.1 "Barlow Semi Condensed",sans-serif}
+.tile.low .tq{color:var(--warn)}.tile.out .tq{color:var(--bad)}
+.addrow{display:grid;grid-template-columns:2fr 2fr 1fr 1fr auto auto;gap:8px;margin:8px 0 4px}
+@media(max-width:760px){.addrow{grid-template-columns:1fr 1fr}}
+.newtag td{background:var(--warnbg)}
+ul.log{list-style:none;margin:0;padding:0;max-height:300px;overflow:auto}
+ul.log li{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)}
+.empty{color:var(--mute);padding:12px 0}
+details{margin-top:16px}summary{cursor:pointer;font-weight:500}
+.set{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:10px}
+.set label{font-size:13px;color:var(--mute);display:block}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Storeroom monitor</h1>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <span class="pill" id="conn"><i></i><span>Offline</span></span>
+    <span class="pill" id="dev"><i></i><span>Device unknown</span></span>
+    <label class="sub" for="range">History</label><select id="range"><option value="1">1 hour</option><option value="24" selected>24 hours</option><option value="168">7 days</option></select>
+  </div>
+</header>
+<div class="sub" id="age" style="margin:-6px 0 12px"></div>
+<div id="alerts" role="alert"></div>
+
+<div class="grid">
+  <section class="card"><h2>Temperature</h2>
+    <div class="read"><span class="num" id="tv">--</span><span class="unit">°C</span><span class="verdict" id="tj"></span></div>
+    <div class="band"><div class="zone" id="tz"></div><div class="mark" id="tm" style="left:0"></div></div>
+    <div class="ticks"><span>0°</span><span id="tr"></span><span>40°</span></div>
+    <svg class="spark" id="ts" viewBox="0 0 240 44" preserveAspectRatio="none"></svg><div class="sub" id="tc"></div>
+  </section>
+  <section class="card"><h2>Humidity</h2>
+    <div class="read"><span class="num" id="hv">--</span><span class="unit">%</span><span class="verdict" id="hj"></span></div>
+    <div class="band"><div class="zone" id="hz"></div><div class="mark" id="hm" style="left:0"></div></div>
+    <div class="ticks"><span>0%</span><span id="hr"></span><span>100%</span></div>
+    <svg class="spark" id="hs" viewBox="0 0 240 44" preserveAspectRatio="none"></svg><div class="sub" id="hc"></div>
+  </section>
+
+  <section class="card wide"><h2>Available stock <span class="sub" id="ovt"></span></h2>
+    <div class="tiles" id="tiles"></div>
+  </section>
+
+  <section class="card wide"><h2>Manage stock</h2>
+    <div class="sub">Add each item with the ID of its tag. When that tag is scanned, that item goes down by one, and you get an alert when it reaches its alert level.</div>
+    <div class="addrow">
+      <input id="an" placeholder="Item name (e.g. Apples)" aria-label="Item name">
+      <input id="au" placeholder="Tag ID (e.g. 04:A1:B2:C3)" aria-label="Tag ID">
+      <input id="as" type="number" min="0" placeholder="Stock" aria-label="Starting stock">
+      <input id="al" type="number" min="0" placeholder="Alert at (3)" aria-label="Alert when stock is at or below">
+      <button class="pri" id="addBtn">Add item</button>
+      <button id="lastBtn">Use last scanned tag</button>
+    </div>
+    <div class="sub" style="margin-bottom:8px">Not sure of the tag ID? Hold the tag against the reader, then press “Use last scanned tag”. To restock later, type the new total in the stock column below.</div>
+    <div style="overflow-x:auto"><table><thead><tr><th>In stock</th><th>Item</th><th>Status</th><th></th></tr></thead><tbody id="stock"></tbody></table></div>
+  </section>
+
+  <section class="card wide"><h2>Recent scans</h2><ul class="log" id="log"></ul></section>
+</div>
+
+<details class="card">
+  <summary>Settings</summary>
+  <div class="set">
+    <div><label for="c1">Temp min °C</label><input id="c1" type="number"></div>
+    <div><label for="c2">Temp max °C</label><input id="c2" type="number"></div>
+    <div><label for="c3">Humidity min %</label><input id="c3" type="number"></div>
+    <div><label for="c4">Humidity max %</label><input id="c4" type="number"></div>
+  </div>
+  <p style="display:flex;gap:8px;margin-bottom:0"><button class="pri" id="saveCfg">Save and reconnect</button><button id="reset">Clear all stock data</button></p>
+  <p class="sub">Download everything saved: <a href="/export/readings.csv">temperature and humidity (CSV)</a> · <a href="/export/scans.csv">scans and stock changes (CSV)</a></p>
+</details>
+</main>
+
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let S={climate:{t:null,h:null,age:null},device:'unknown',mqtt:false,products:[],pending:[],scans:[],settings:{tMin:15,tMax:25,hMin:30,hMax:60}};
+let hist=[],link=false,rx=Date.now(),cfgFilled=false;
+const age=()=>S.climate.age===null?null:S.climate.age+(Date.now()-rx)/1000;
+async function api(path,method='GET',body){
+  try{
+    const r=await fetch(path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+    if(!r.ok)throw new Error(await r.text()||'Request failed');
+    const j=await r.json();if(method!=='GET')refresh();return j;
+  }catch(e){if(method!=='GET')alert(e.message);throw e}
+}
+const refresh=()=>api('/api/state').then(applyState).catch(()=>{});
+
+/* ---------- climate ---------- */
+const verdict=(v,min,max,lo,hi)=>v<min?lo:v>max?hi:'In range';
+function band(id,v,min,max,top){
+  const pc=x=>Math.max(0,Math.min(100,x/top*100));
+  $('#'+id+'z').style.left=pc(min)+'%';$('#'+id+'z').style.width=(pc(max)-pc(min))+'%';$('#'+id+'m').style.left=pc(v)+'%';
+}
+function spark(id,arr,min,max){
+  if(arr.length<2){$('#'+id).innerHTML='';return}
+  const lo=Math.min(...arr,min),hi=Math.max(...arr,max),r=hi-lo||1,y=v=>40-((v-lo)/r)*36;
+  const pts=arr.map((v,i)=>(i/(arr.length-1)*240).toFixed(1)+','+y(v).toFixed(1)).join(' ');
+  $('#'+id).innerHTML=`<rect x="0" y="${y(max)}" width="240" height="${y(min)-y(max)}" fill="var(--ok)" opacity=".15"/><polyline points="${pts}" fill="none" stroke="var(--ink)" stroke-width="1.6" vector-effect="non-scaling-stroke"/>`;
+}
+function renderClimate(){
+  const {t,h}=S.climate,c=S.settings;
+  $('#tr').textContent=c.tMin+'–'+c.tMax+'° ideal';$('#hr').textContent=c.hMin+'–'+c.hMax+'% ideal';
+  if(t!==null){
+    $('#tv').textContent=t.toFixed(1);$('#hv').textContent=h.toFixed(1);
+    const tj=verdict(t,c.tMin,c.tMax,'Too cold','Too warm'),hj=verdict(h,c.hMin,c.hMax,'Too dry','Too humid');
+    $('#tj').textContent=tj;$('#hj').textContent=hj;
+    $('#tj').style.color=tj==='In range'?'var(--ok)':'var(--bad)';$('#hj').style.color=hj==='In range'?'var(--ok)':'var(--bad)';
+    band('t',t,c.tMin,c.tMax,40);band('h',h,c.hMin,c.hMax,100);
+  }else{band('t',0,c.tMin,c.tMax,40);band('h',0,c.hMin,c.hMax,100)}
+  renderAlerts();
+}
+function renderHist(){
+  const c=S.settings,tt=hist.map(r=>r.t),hh=hist.map(r=>r.h),span=$('#range').selectedOptions[0].text.toLowerCase();
+  spark('ts',tt,c.tMin,c.tMax);spark('hs',hh,c.hMin,c.hMax);
+  $('#tc').textContent=tt.length?`Last ${span}: ${Math.min(...tt).toFixed(1)} to ${Math.max(...tt).toFixed(1)}°C`:'No readings saved for this period yet.';
+  $('#hc').textContent=hh.length?`Last ${span}: ${Math.min(...hh).toFixed(1)} to ${Math.max(...hh).toFixed(1)}%`:'No readings saved for this period yet.';
+}
+const loadHist=()=>api('/api/history?hours='+$('#range').value).then(h=>{hist=h;renderHist()}).catch(()=>{});
+const lvl=p=>p.stock<=0?'out':p.stock<=p.low?'low':'ok';
+function renderAlerts(){
+  const a=[],c=S.settings,{t,h}=S.climate;
+  if(t!==null){
+    if(t<c.tMin||t>c.tMax)a.push(`Temperature is ${t.toFixed(1)}°C, outside ${c.tMin}–${c.tMax}°C.`);
+    if(h<c.hMin||h>c.hMax)a.push(`Humidity is ${h.toFixed(1)}%, outside ${c.hMin}–${c.hMax}%.`);
+  }
+  S.products.forEach(p=>{const l=lvl(p);if(l==='out')a.push(`${p.name} is out of stock.`);else if(l==='low')a.push(`${p.name} is low: ${p.stock} left.`)});
+  const el=$('#alerts');el.style.display=a.length?'block':'none';el.innerHTML=a.map(esc).join('<br>');
+}
+
+/* ---------- stock ---------- */
+const ICONS=[['apple','🍎'],['orange','🍊'],['banana','🍌'],['pear','🍐'],['lemon','🍋'],['grape','🍇'],['strawberr','🍓'],['tomato','🍅'],['carrot','🥕'],['potato','🥔'],['onion','🧅'],['egg','🥚'],['milk','🥛'],['bread','🍞'],['cheese','🧀'],['water','💧'],['glove','🧤']];
+const icon=n=>{n=String(n).toLowerCase();for(const [k,v] of ICONS)if(n.includes(k))return v;return '📦'};
+function renderOverview(){
+  const total=S.products.reduce((a,p)=>a+p.stock,0);
+  $('#ovt').textContent=S.products.length?`${total} units across ${S.products.length} item${S.products.length>1?'s':''}`:'';
+  $('#tiles').innerHTML=S.products.length?S.products.map(p=>{
+    const l=lvl(p),lab={ok:'In stock',low:'Running low',out:'Out of stock'}[l];
+    return `<div class="tile ${l}"><div class="ic">${icon(p.name)}</div><div class="tn">${esc(p.name)}</div><div class="tq">${p.stock}</div><span class="chip ${l}">${lab}</span></div>`}).join('')
+    :'<div class="empty">No items yet. Add one below.</div>';
+}
+function renderStock(){
+  let h='';
+  S.pending.forEach(uid=>{
+    h+=`<tr class="newtag" data-p="${esc(uid)}"><td><input class="ps" type="number" min="0" value="10" aria-label="Starting stock"></td>
+    <td><input class="pn" placeholder="Name this item" aria-label="Item name"><div class="uid">New tag ${esc(uid)}</div></td>
+    <td><input class="pl" type="number" min="0" value="3" aria-label="Low-stock level"><div class="uid">Alert when stock is at or below this</div></td>
+    <td class="act"><button class="pri" onclick="reg('${esc(uid)}')">Add item</button> <button onclick="ignoreTag('${esc(uid)}')">Ignore</button></td></tr>`;
+  });
+  S.products.forEach(p=>{
+    const c={out:['out','Out'],low:['low','Low'],ok:['ok','OK']}[lvl(p)];
+    h+=`<tr><td class="q"><input class="qty" type="number" min="0" step="1" value="${p.stock}" onchange="setStock('${esc(p.uid)}',this.value)" aria-label="Stock for ${esc(p.name)}"></td>
+    <td>${icon(p.name)} ${esc(p.name)}<div class="uid">${esc(p.uid)} · alert at or below <input class="lw" type="number" min="0" step="1" value="${p.low}" onchange="setLow('${esc(p.uid)}',this.value)" aria-label="Alert level for ${esc(p.name)}"></div></td>
+    <td><span class="chip ${c[0]}">${c[1]}</span></td>
+    <td class="act"><button onclick="removeProduct('${esc(p.uid)}')">Remove</button></td></tr>`;
+  });
+  $('#stock').innerHTML=h||'<tr><td colspan="4" class="empty">No items yet. Hold a tag against the reader to register it.</td></tr>';
+  $('#log').innerHTML=S.scans.length?S.scans.map(l=>{
+    const d=l.kind==='manual'?`set to ${l.after} by hand`:l.after===null?'not registered':`${l.after} left`;
+    return `<li><span>${l.after===null&&l.kind!=='manual'?'':icon(l.name)+' '}${esc(l.name)} <span class="uid">${esc(l.uid)}</span></span><span class="sub">${d} · ${new Date(l.ts*1000).toLocaleString([],{dateStyle:'short',timeStyle:'short'})}</span></li>`}).join(''):'<li class="empty">No scans yet.</li>';
+}
+const enc=u=>'/api/products/'+encodeURIComponent(u);
+function reg(uid){
+  const row=document.querySelector(`[data-p="${uid}"]`),n=row.querySelector('.pn');
+  if(!n.value.trim()){n.focus();return}
+  api('/api/products','POST',{uid,name:n.value.trim(),stock:+row.querySelector('.ps').value||0,low:+row.querySelector('.pl').value||0});
+}
+const setStock=(uid,v)=>api(enc(uid),'PATCH',{stock:v});
+const setLow=(uid,v)=>api(enc(uid),'PATCH',{low:v});
+const ignoreTag=uid=>api('/api/ignore','POST',{uid});
+function removeProduct(uid){const p=S.products.find(x=>x.uid===uid);if(p&&confirm('Remove '+p.name+'?'))api(enc(uid),'DELETE')}
+
+$('#addBtn').onclick=()=>{
+  const n=$('#an'),u=$('#au'),st=$('#as'),lo=$('#al');
+  if(!n.value.trim())return n.focus();
+  if(!u.value.trim())return u.focus();
+  if(st.value==='')return st.focus();
+  api('/api/products','POST',{name:n.value.trim(),uid:u.value.trim(),stock:+st.value,low:lo.value===''?3:+lo.value})
+    .then(()=>{n.value=u.value=st.value=lo.value='';n.focus()}).catch(()=>{});
+};
+$('#lastBtn').onclick=()=>{
+  const id=S.pending[0]||(S.scans[0]&&S.scans[0].uid);
+  if(id){$('#au').value=id;$('#an').focus()}else alert('No tag has been scanned yet. Hold a tag against the reader first.');
+};
+
+/* ---------- connection ---------- */
+const fmtAge=a=>a<60?Math.round(a)+' s':a<3600?Math.round(a/60)+' min':(a/3600).toFixed(1)+' h';
+function renderConn(){
+  const c=$('#conn'),a=age();
+  c.className='pill '+(!link?'bad':!S.mqtt?'warn':'on');
+  c.lastChild.textContent=!link?'Server offline':!S.mqtt?'Broker offline':'Connected';
+  let dev=link?S.device:'unknown';if(dev==='online'&&a!==null&&a>30)dev='offline';
+  const d=$('#dev');d.className='pill '+(dev==='online'?'on':dev==='offline'?'bad':'');
+  d.lastChild.textContent=dev==='online'?'Device online':dev==='offline'?'Device offline':'Device unknown';
+  $('#age').textContent=a===null?'No readings yet.':`Last reading ${fmtAge(a)} ago.`;
+}
+function applyState(s){
+  S=s;rx=Date.now();
+  if(!cfgFilled){fillCfg();cfgFilled=true}
+  renderClimate();renderHist();renderConn();renderOverview();
+  if(!document.activeElement?.closest?.('#stock'))renderStock();   // don't wipe a number someone is typing
+}
+function listen(){
+  const es=new EventSource('/api/events');
+  es.onopen=()=>{link=true;renderConn();loadHist()};
+  es.onerror=()=>{link=false;renderConn()};
+  es.addEventListener('state',e=>applyState(JSON.parse(e.data)));
+  es.addEventListener('climate',e=>{S.climate=JSON.parse(e.data);rx=Date.now();renderClimate();renderConn()});
+}
+
+/* ---------- settings ---------- */
+function fillCfg(){const c=S.settings;$('#c1').value=c.tMin;$('#c2').value=c.tMax;$('#c3').value=c.hMin;$('#c4').value=c.hMax}
+$('#saveCfg').onclick=()=>api('/api/settings','PUT',{tMin:$('#c1').value,tMax:$('#c2').value,hMin:$('#c3').value,hMax:$('#c4').value});
+$('#reset').onclick=()=>{if(confirm('Delete all items and scan history? Temperature and humidity history is kept.'))api('/api/clear','POST',{})};
+$('#range').onchange=loadHist;
+setInterval(renderConn,1000);setInterval(loadHist,60000);
+
+renderClimate();renderStock();renderOverview();renderConn();refresh();listen();
+</script>
+</body>
+</html>
