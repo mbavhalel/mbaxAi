@@ -2,37 +2,53 @@
 """
 Storeroom server
   - listens to the ESP32 over MQTT (climate, scans, status)
-  - stores everything in SQLite (storeroom.db, one file next to this script)
+  - stores everything in SQLite on a persistent data path
   - keeps the stock counts and sends low / out-of-stock alerts, even with no browser open
-  - serves the dashboard and a small JSON API on http://localhost:8080
+  - serves a password-protected dashboard and JSON API
 
-Run:   pip install paho-mqtt
-       python server.py
-
-Optional environment variables:
-  MQTT_HOST (localhost)  MQTT_PORT (1883)  HTTP_HOST (127.0.0.1)  HTTP_PORT (8080)
-  DB_PATH (storeroom.db)  KEEP_DAYS (365: how long to keep temperature readings)
-  TG_TOKEN + TG_CHAT_ID   send stock alerts straight to Telegram. If not set, alerts are
-                          published on MQTT and the ESP32 forwards them to Telegram.
+Run: pip install -r requirements.txt, set APP_PASSWORD, then python server.py.
+See README.md for free remote access and configuration.
 """
-import csv, io, json, os, queue, re, sqlite3, threading, time, urllib.request
+import csv, hmac, io, json, math, os, queue, re, sqlite3, threading, time, urllib.request
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote
+from pathlib import Path
+from urllib.parse import urlsplit
 
 import paho.mqtt.client as mqtt
+from flask import Flask, Response, jsonify, request, send_file
+from waitress import serve
+
+
+def env_bool(name, default=False):
+    value = os.getenv(name, str(default)).lower()
+    if value not in ("true", "false", "1", "0"):
+        raise ValueError("%s must be true or false" % name)
+    return value in ("true", "1")
+
+
+APP_USERNAME = os.getenv("APP_USERNAME", "admin")
+APP_PASSWORD = os.getenv("APP_PASSWORD", "")
+if not APP_USERNAME or len(APP_PASSWORD) < 16:
+    raise ValueError("Set APP_PASSWORD to at least 16 characters (and a nonempty APP_USERNAME). See README.md.")
 
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
-MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-HTTP_HOST = os.getenv("HTTP_HOST", "127.0.0.1")   # use 0.0.0.0 to open it from other devices (no login!)
-HTTP_PORT = int(os.getenv("HTTP_PORT", "8080"))
+MQTT_TLS = env_bool("MQTT_TLS")
+MQTT_ENABLED = env_bool("MQTT_ENABLED", True)
+MQTT_PORT = int(os.getenv("MQTT_PORT", "8883" if MQTT_TLS else "1883"))
+MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
+MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
+MQTT_CLIENT_ID = os.getenv("MQTT_CLIENT_ID", "storeroom-server")
+HTTP_HOST = os.getenv("HTTP_HOST", "127.0.0.1")
+HTTP_PORT = int(os.getenv("PORT", os.getenv("HTTP_PORT", "8080")))
 HERE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.getenv("DB_PATH", os.path.join(HERE, "storeroom.db"))
+DB_PATH = os.getenv("DB_PATH", str(Path.home() / ".mbaxai" / "storeroom.db"))
 KEEP_DAYS = int(os.getenv("KEEP_DAYS", "365"))
 TG_TOKEN = os.getenv("TG_TOKEN", "")
 TG_CHAT = os.getenv("TG_CHAT_ID", "")
 
 # ---------------------------------------------------------------- database
+Path(DB_PATH).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+DB_PATH = str(Path(DB_PATH).expanduser())
 db = sqlite3.connect(DB_PATH, check_same_thread=False)
 db.row_factory = sqlite3.Row
 db.executescript("""
@@ -61,7 +77,7 @@ client = None
 def clamp_int(v, default=0):
     try:
         return max(0, min(1_000_000, int(float(v))))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -155,8 +171,9 @@ def send_alert(msg):
             urllib.request.urlopen(req, timeout=10).read()
             print("alert sent (Telegram):", msg)
             return True
-        except Exception as e:
-            print("Telegram alert failed:", e)
+        except Exception:
+            # HTTP exceptions can contain the Telegram bot token in their URL.
+            print("Telegram alert failed; check the configured bot and chat.")
             return False
     if not mqtt_ok or client is None:
         return False
@@ -198,7 +215,9 @@ def handle_climate(j):
     global latest
     try:
         t, h = float(j["t"]), float(j["h"])
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return
+    if not math.isfinite(t) or not math.isfinite(h):
         return
     now = int(time.time())
     with lock:
@@ -209,8 +228,7 @@ def handle_climate(j):
 
 
 def handle_scan(j):
-    raw = str(j.get("uid", "")).strip()
-    uid = norm_uid(raw) or raw.upper()
+    uid = norm_uid(j.get("uid", ""))
     if not uid:
         return
     now = int(time.time())
@@ -260,6 +278,8 @@ def on_message(c, userdata, msg):
         j = json.loads(payload)
     except ValueError:
         return
+    if not isinstance(j, dict):
+        return
     if msg.topic == "storeroom/climate":
         handle_climate(j)
     elif msg.topic == "storeroom/scan":
@@ -307,8 +327,10 @@ def save_settings(d):
     for k in DEFAULTS:
         try:
             vals[k] = float(d[k])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             raise ValueError("Enter a number for every range")
+        if not math.isfinite(vals[k]):
+            raise ValueError("Enter a finite number for every range")
     if vals["tMin"] >= vals["tMax"] or vals["hMin"] >= vals["hMax"]:
         raise ValueError("Each minimum must be lower than its maximum")
     with lock:
@@ -324,107 +346,131 @@ def clear_stock():
         db.commit()
 
 # ---------------------------------------------------------------- HTTP
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *a):
-        pass
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
 
-    def reply(self, body, ctype, code=200, extra=None):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        for k, v in (extra or {}).items():
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(body)
 
-    def json(self, obj):
-        self.reply(json.dumps(obj).encode(), "application/json")
+@app.before_request
+def protect_dashboard():
+    # Data-free endpoint used by the host's health checker.
+    if request.path == "/healthz" and request.method in ("GET", "HEAD"):
+        return None
+    auth = request.authorization
+    if not (auth and auth.type.lower() == "basic"
+            and hmac.compare_digest((auth.username or "").encode(), APP_USERNAME.encode())
+            and hmac.compare_digest((auth.password or "").encode(), APP_PASSWORD.encode())):
+        return Response("Sign in to Storeroom monitor.", 401,
+                        {"WWW-Authenticate": 'Basic realm="Storeroom", charset="UTF-8"'})
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        # Browser Basic auth is sent automatically. Reject cross-site writes and
+        # require JSON so ordinary cross-site HTML forms cannot change stock.
+        origin = request.headers.get("Origin")
+        if request.headers.get("Sec-Fetch-Site") == "cross-site":
+            return Response("Cross-site request rejected", 403)
+        if origin:
+            parsed = urlsplit(origin)
+            # TLS terminates at the reverse proxy; never trust a forwarded host.
+            if parsed.scheme not in ("http", "https") or parsed.netloc != request.host:
+                return Response("Cross-site request rejected", 403)
+        if request.method != "DELETE" and not request.is_json:
+            return Response("Use application/json", 415)
+    return None
 
-    def text(self, msg, code):
-        self.reply(msg.encode(), "text/plain; charset=utf-8", code)
 
-    def do_GET(self):
-        u = urlparse(self.path)
-        if u.path in ("/", "/index.html"):
-            try:
-                with open(os.path.join(HERE, "dashboard.html"), "rb") as f:
-                    return self.reply(f.read(), "text/html; charset=utf-8")
-            except OSError:
-                return self.text("dashboard.html must sit next to server.py", 404)
-        if u.path == "/api/state":
-            return self.json(state())
-        if u.path == "/api/history":
-            hours = clamp_int((parse_qs(u.query).get("hours") or ["24"])[0], 24) or 24
-            return self.json(history(hours))
-        if u.path == "/api/events":
-            return self.events()
-        if u.path.startswith("/export/") and u.path.endswith(".csv"):
-            data = export_csv(u.path[8:-4])
-            if data is None:
-                return self.text("Not found", 404)
-            return self.reply(data, "text/csv; charset=utf-8",
-                              extra={"Content-Disposition": 'attachment; filename="%s"' % u.path[8:]})
-        self.text("Not found", 404)
+@app.after_request
+def security_headers(response):
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "same-origin"
+    return response
 
-    def events(self):
+
+@app.get("/healthz")
+def health():
+    with lock:
+        db.execute("SELECT 1").fetchone()
+    return jsonify(status="ok")
+
+
+@app.get("/")
+@app.get("/index.html")
+def dashboard():
+    return send_file(os.path.join(HERE, "dashboard.html"))
+
+
+@app.get("/api/state")
+def api_state():
+    return jsonify(state())
+
+
+@app.get("/api/history")
+def api_history():
+    return jsonify(history(clamp_int(request.args.get("hours", "24"), 24) or 24))
+
+
+@app.get("/export/<name>.csv")
+def download_csv(name):
+    data = export_csv(name)
+    if data is None:
+        return Response("Not found", 404)
+    return Response(data, content_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="%s.csv"' % name})
+
+
+@app.get("/api/events")
+def events():
+    def stream():
         q = queue.Queue(maxsize=100)
         with clients_lock:
             clients.add(q)
         try:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(("retry: 3000\nevent: state\ndata: %s\n\n" % json.dumps(state())).encode())
-            self.wfile.flush()
+            yield "retry: 3000\nevent: state\ndata: %s\n\n" % json.dumps(state())
             while True:
                 try:
-                    msg = q.get(timeout=15)
+                    yield q.get(timeout=15)
                 except queue.Empty:
-                    msg = ": ping\n\n"
-                self.wfile.write(msg.encode())
-                self.wfile.flush()
-        except OSError:
-            pass
+                    yield ": ping\n\n"
         finally:
             with clients_lock:
                 clients.discard(q)
+    return Response(stream(), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no"})
 
-    def dispatch(self, method):
-        path = urlparse(self.path).path
-        try:
-            n = int(self.headers.get("Content-Length") or 0)
-            d = json.loads(self.rfile.read(n) or b"{}") if method in ("POST", "PUT", "PATCH") else {}
-            if not isinstance(d, dict):
-                raise ValueError("Bad request")
-            if method == "POST" and path == "/api/products":
-                add_product(d)
-            elif method == "POST" and path == "/api/ignore":
-                with lock:
-                    db.execute("INSERT OR IGNORE INTO ignored(uid) VALUES(?)", (str(d.get("uid", "")).upper(),))
-                    db.commit()
-            elif method == "POST" and path == "/api/clear":
-                clear_stock()
-            elif method == "PUT" and path == "/api/settings":
-                save_settings(d)
-            elif method == "PATCH" and path.startswith("/api/products/"):
-                update_product(unquote(path[14:]).upper(), d)
-            elif method == "DELETE" and path.startswith("/api/products/"):
-                delete_product(unquote(path[14:]).upper())
-            else:
-                return self.text("Not found", 404)
-            changed()
-            self.json({"ok": True})
-        except ValueError as e:
-            self.text(str(e), 400)
-        except KeyError:
-            self.text("Not found", 404)
 
-    def do_POST(self): self.dispatch("POST")
-    def do_PUT(self): self.dispatch("PUT")
-    def do_PATCH(self): self.dispatch("PATCH")
-    def do_DELETE(self): self.dispatch("DELETE")
+@app.route("/api/products", methods=["POST"])
+@app.route("/api/products/<uid>", methods=["PATCH", "DELETE"])
+@app.route("/api/ignore", methods=["POST"])
+@app.route("/api/clear", methods=["POST"])
+@app.route("/api/settings", methods=["PUT"])
+def change_stock(uid=None):
+    d = {} if request.method == "DELETE" and not request.content_length else request.get_json(silent=True)
+    if not isinstance(d, dict):
+        return Response("Use a JSON object", 400)
+    try:
+        if request.method == "PATCH":
+            update_product(uid.upper(), d)
+        elif request.method == "DELETE":
+            delete_product(uid.upper())
+        elif request.path == "/api/products":
+            add_product(d)
+        elif request.path == "/api/ignore":
+            tag = norm_uid(d.get("uid", ""))
+            if not tag:
+                raise ValueError("Invalid tag ID")
+            with lock:
+                db.execute("INSERT OR IGNORE INTO ignored(uid) VALUES(?)", (tag,))
+                db.commit()
+        elif request.path == "/api/clear":
+            clear_stock()
+        elif request.path == "/api/settings":
+            save_settings(d)
+        changed()
+        return jsonify(ok=True)
+    except ValueError as e:
+        return Response(str(e), 400)
+    except KeyError:
+        return Response("Not found", 404)
 
 
 def prune_loop():
@@ -436,10 +482,11 @@ def prune_loop():
 
 
 def make_client():
-    try:
-        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="storeroom-server")   # paho-mqtt 2.x
-    except AttributeError:
-        c = mqtt.Client(client_id="storeroom-server")                                     # paho-mqtt 1.x
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MQTT_CLIENT_ID)
+    if MQTT_USERNAME:
+        c.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+    if MQTT_TLS:
+        c.tls_set()  # System CA trust and hostname verification remain enabled.
     c.on_connect, c.on_disconnect, c.on_message = on_connect, on_disconnect, on_message
     c.reconnect_delay_set(1, 30)
     return c
@@ -447,17 +494,22 @@ def make_client():
 
 def main():
     global client
-    client = make_client()
-    client.connect_async(MQTT_HOST, MQTT_PORT, 60)   # the dashboard still opens if the broker is down
-    client.loop_start()
+    if MQTT_ENABLED:
+        client = make_client()
+        client.connect_async(MQTT_HOST, MQTT_PORT, 60)
+        client.loop_start()
     threading.Thread(target=prune_loop, daemon=True).start()
-    srv = ThreadingHTTPServer((HTTP_HOST, HTTP_PORT), Handler)
-    srv.daemon_threads = True
-    print("Dashboard: http://%s:%d   database: %s" % ("localhost" if HTTP_HOST in ("127.0.0.1", "0.0.0.0") else HTTP_HOST, HTTP_PORT, DB_PATH))
+    print("Dashboard listening on %s:%d" % (HTTP_HOST, HTTP_PORT), flush=True)
     try:
-        srv.serve_forever()
+        # One process owns MQTT + SQLite; threads allow multiple live dashboards.
+        serve(app, host=HTTP_HOST, port=HTTP_PORT, threads=16,
+              max_request_body_size=64 * 1024, channel_timeout=120)
     except KeyboardInterrupt:
         pass
+    finally:
+        if client is not None:
+            client.disconnect()
+            client.loop_stop()
 
 
 if __name__ == "__main__":

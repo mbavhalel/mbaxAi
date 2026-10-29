@@ -1,0 +1,44 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      APP_USERNAME: ${APP_USERNAME:-admin}
+      APP_PASSWORD: ${APP_PASSWORD:?Set APP_PASSWORD in .env}
+      MQTT_HOST: ${MQTT_HOST:?Set MQTT_HOST in .env}
+      MQTT_PORT: ${MQTT_PORT:-8883}
+      MQTT_TLS: ${MQTT_TLS:-true}
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-storeroom-server}
+      TG_TOKEN: ${TG_TOKEN:-}
+      TG_CHAT_ID: ${TG_CHAT_ID:-}
+    volumes:
+      - stock_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  https:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - https_data:/data
+      - https_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  stock_data:
+  https_data:
+  https_config:
