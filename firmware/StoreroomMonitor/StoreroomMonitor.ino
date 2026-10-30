@@ -15,6 +15,7 @@
 #include "BoundedResponse.h"
 #include "CardGate.h"
 #include "LegacyScanMigration.h"
+#include "SerialSetupCommand.h"
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -57,6 +58,7 @@ bool showingAccessMessage = false;
 uint32_t lastCardProbe = 0;
 CardGate cardGate;
 bool bootRemovalMessageShown = false;
+SerialSetupCommand serialSetupCommand;
 
 SharedState snapshot() {
   portENTER_CRITICAL(&stateMutex);
@@ -294,33 +296,26 @@ void networkTask(void*) {
   }
 }
 
-void provisionQueueIfRequested() {
-  if (LittleFS.begin(false)) { LittleFS.end(); return; }
-  Serial.println("Queue storage is not mounted. It will NOT be erased automatically.");
-  Serial.println("On a NEW EMPTY device only, type FORMAT_QUEUE within 30 seconds.");
-  Serial.println("WARNING: this explicit command formats the data partition and destroys any old queue.");
-  lcdLine(0, "Queue not ready");
-  lcdLine(1, "See Serial setup");
-  const uint32_t deadline = millis() + 30000;
-  String line;
-  while (!QueuePolicy::due(millis(), deadline)) {
-    while (Serial.available()) {
-      const char c = Serial.read();
-      if (c == '\n') {
-        line.trim();
-        if (line == "FORMAT_QUEUE") {
-          Serial.println(LittleFS.format() ? "Empty queue initialized." : "Queue initialization failed.");
-          return;
-        }
-        line = "";
-      } else if (line.length() < 64) line += c;
-    }
-    delay(10);
+void runQueueSetupCommand(SerialSetupCommand::Command command) {
+  if (command == SerialSetupCommand::Command::None) return;
+  const bool ready = command == SerialSetupCommand::Command::FormatQueue
+      ? scanQueue.initializeEmptyQueue() : scanQueue.retryQueue();
+  lcdLine(0, ready ? "Queue ready" : "Queue setup");
+  lcdLine(1, ready ? "Scans enabled" : "See Serial help");
+  showingAccessMessage = true;
+  accessMessageUntil = millis() + 2500;
+}
+
+void processSerialSetupCommands() {
+  while (Serial.available()) {
+    runQueueSetupCommand(serialSetupCommand.feed(static_cast<char>(Serial.read()), millis()));
   }
+  runQueueSetupCommand(serialSetupCommand.poll(millis()));
 }
 
 void setup() {
   Serial.begin(115200);
+  Serial.println("StoreroomMonitor - Queue setup v2");
   Wire.begin(21, 22);
   lcd.init();
   lcd.backlight();
@@ -329,8 +324,8 @@ void setup() {
   SPI.begin(18, 19, 23, SS_PIN);
   rfid.PCD_Init();
   dht.begin();
-  provisionQueueIfRequested();
   if (!scanQueue.begin()) Serial.println("Queue needs attention. Existing data preserved; scan failures will be displayed.");
+  Serial.println("Queue setup v2 commands: FORMAT_QUEUE (known empty/unmounted only), RETRY_QUEUE (never erases). Send at any time; no line ending required.");
   legacyScanMigration.begin();
   shared.legacyPending = legacyScanMigration.remaining();
   shared.legacyAttention = legacyScanMigration.needsAttention();
@@ -365,7 +360,8 @@ void handleCard(const String& uid) {
       Serial.println("Queue full. This scan was not saved; wait for upload then scan again.");
     } else {
       secondLine = "STORAGE ERROR!";
-      Serial.println("Could not confirm durable scan storage. Inspect queue before rescanning.");
+      Serial.print("Scan storage failed: ");
+      Serial.println(scanQueue.errorReason());
     }
   }
   Serial.print("Card UID: "); Serial.println(uid);
@@ -405,6 +401,7 @@ void checkRFID(uint32_t now) {
 }
 
 void loop() {
+  processSerialSetupCommands();
   const uint32_t now = millis();
   if (now - lastSensorRead >= SENSOR_INTERVAL_MS) {
     lastSensorRead = now;

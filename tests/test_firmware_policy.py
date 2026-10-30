@@ -10,6 +10,57 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FirmwarePolicyTests(unittest.TestCase):
+    def test_serial_queue_setup_accepts_complete_commands_without_a_deadline(self):
+        compiler = shutil.which("g++")
+        if not compiler:
+            self.skipTest("g++ is required for native firmware policy tests")
+        code = r'''
+          #include <cassert>
+          #include <cstdint>
+          #include <string>
+          #include "SerialSetupCommand.h"
+          using Command = SerialSetupCommand::Command;
+          void burst(SerialSetupCommand& parser, const std::string& text, uint32_t now) {
+            for (char value : text) assert(parser.feed(value,now) == Command::None);
+          }
+          int main() {
+            SerialSetupCommand parser;
+            const uint32_t late = 3000000000U; // Setup still works long after boot.
+            burst(parser,"FORMAT_QUEUE",late);
+            assert(parser.poll(late+199) == Command::None);
+            assert(parser.poll(late+200) == Command::FormatQueue);
+            assert(parser.poll(late+1000) == Command::None);
+            burst(parser,"FoRmAt_QuEuE",late+2000);
+            assert(parser.feed('\r',late+2000) == Command::FormatQueue);
+            assert(parser.feed('\n',late+2000) == Command::None);
+            burst(parser,"  retry_queue\t",late+3000);
+            assert(parser.feed('\n',late+3000) == Command::RetryQueue);
+            // A valid prefix must never execute a malformed formatting command.
+            const std::string invalid[] = {"FORMAT_QUEUE_EXTRA","junkFORMAT_QUEUE",std::string(100,'X')+"FORMAT_QUEUE",
+              std::string("FORMAT_QUEUE\0EXTRA",18),std::string("FORMAT_QUEUE")+char(0xff)};
+            for (const std::string& text : invalid) {
+              burst(parser,text,100);
+              assert(parser.poll(300) == Command::None);
+            }
+            burst(parser,"FORMAT_QUEUE",UINT32_MAX-50);
+            assert(parser.poll(148) == Command::None);
+            assert(parser.poll(149) == Command::FormatQueue);
+            burst(parser,"FORMAT_QUEUE",1000);
+            parser.reset();
+            assert(parser.poll(2000) == Command::None);
+          }
+        '''
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "serial.cpp"
+            binary = Path(directory) / "serial"
+            source.write_text(code)
+            compiled = subprocess.run([compiler,"-std=c++17","-Wall","-Wextra","-Werror",
+                "-I",str(ROOT / "firmware/StoreroomMonitor"),str(source),"-o",str(binary)],
+                text=True,capture_output=True)
+            self.assertEqual(compiled.returncode,0,compiled.stderr)
+            executed = subprocess.run([str(binary)],text=True,capture_output=True)
+            self.assertEqual(executed.returncode,0,executed.stderr)
+
     def test_card_presentations_and_retry_timers(self):
         compiler = shutil.which("g++")
         if not compiler:

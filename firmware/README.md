@@ -58,20 +58,36 @@ including deploying `ingest-device` and setting its `DEVICE_TOKEN` secret.
 
 ## 3. Upload and initialize the queue once
 
-Upload the sketch, then open Serial Monitor at **115200 baud**, with a newline
-line ending. On a new board whose LittleFS is not initialized, it asks you to type:
+Upload the sketch, keeping your existing private `secrets.h`, then open Serial
+Monitor at **115200 baud**. The new startup banner says **Queue setup v2**.
+On an uninitialized filesystem, send this exact text through Serial Monitor:
 
 ```text
 FORMAT_QUEUE
 ```
 
-Type that exact command within the 30-second startup window, then press Enter.
-Reset the board if you missed the window. **Only do this on a new/empty filesystem:**
-it formats the data partition. Existing queue data is never erased automatically,
-and a healthy existing filesystem does not offer this formatting window.
+There is **no startup deadline**. Newline, CRLF, and “No line ending” all work;
+with no line ending, the command runs after a short pause. Wait for:
+
+```text
+Empty queue initialized and mounted. Scans can now be saved.
+```
+
+The queue becomes usable immediately; no reset or re-upload is required after
+that message. A successful scan then reports `RFID scan saved locally` followed
+by `Scan acknowledged` when Supabase accepts it.
+
+Formatting is explicit and is **refused when the filesystem is already mounted**.
+Only initialize a new/known-empty LittleFS partition; formatting an unmounted
+partition that previously contained files can erase them. Existing data is never
+erased automatically. `RETRY_QUEUE` instead retries mounting/opening storage
+without formatting, and is suitable when trying to recover existing files.
+
 When upgrading the old NVS-only sketch, LittleFS may still be new/unformatted.
 Initializing a known-empty LittleFS partition does not erase the separate NVS
 `mbaxscan` records; the sketch copies those records after the filesystem mounts.
+If initialization fails, Serial Monitor now identifies whether the failure was
+mounting, opening NVS metadata, opening a file, writing, or renaming it.
 
 The LCD then shows the original temperature/humidity display, alternating the
 second line with cloud/queue status. It keeps showing access messages for 2.5
@@ -174,7 +190,7 @@ configuration issue. Live TLS on the actual board still needs that hardware chec
 ## Validation
 
 The complete sketch was compiled for **esp32:esp32:esp32** with the pinned versions
-above and the default partition. Native tests cover card rearming and timer/retry
+above and the default partition. Native tests cover serial setup commands, card rearming, and timer/retry
 behavior. A local software integration test exercises ESP32-format requests
 through the real Edge Function, PostgREST, and PostgreSQL, including duplicate
 scan retries and dashboard state/history reads:
