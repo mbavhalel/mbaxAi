@@ -119,11 +119,12 @@ scan payloads in persistent device storage until a 2xx response, including acros
 reboots. Network errors, 429, and 5xx can be retried with backoff. Fix invalid data
 or credentials on 400/401/403 before retrying. Requests are limited to 64 KiB.
 
-[`firmware/StoreroomSupabase.h`](firmware/StoreroomSupabase.h) provides a small
-Arduino ESP32 HTTPS helper; [its guide](firmware/README.md) shows where to connect
-it to your sensor/RFID code. Your actual firmware was not provided, so the helper
-must be integrated there. Use verified TLS with the current trusted CA and an
-NTP-synchronized clock. Do not use `setInsecure()`.
+The complete [ESP32 sketch](firmware/StoreroomMonitor/StoreroomMonitor.ino) now
+includes your MFRC522, DHT22, and LCD code with Wi-Fi, verified HTTPS, and a durable
+scan queue. Follow the [firmware upload guide](firmware/README.md): copy the example
+configuration to `secrets.h`, fill your four connection values, upload, and explicitly
+initialize the queue once on a new board. The public CA bundle is included. Remove
+the tag between scans; the sketch prevents held-card and reboot duplicates.
 
 Send climate/status events at least once a minute so the dashboard can tell that
 the device is online; a device becomes offline after 90 seconds without events.
@@ -193,6 +194,7 @@ npm test
 npm run build
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 scripts/test_database.py
+python3 scripts/test_device_pipeline.py
 npx --yes deno@2.1.14 test --frozen --config supabase/functions/deno.json supabase/functions/_shared/validation_test.ts
 npx --yes deno@2.1.14 check --frozen --config supabase/functions/deno.json supabase/functions/ingest-device/index.ts supabase/functions/process-alerts/index.ts
 ```

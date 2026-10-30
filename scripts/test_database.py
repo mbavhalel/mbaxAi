@@ -41,7 +41,7 @@ def main():
         run("run", "--detach", "--name", container, "--env", "POSTGRES_PASSWORD",
             "postgres:17-alpine", "-c", "wal_level=logical")
         for _ in range(100):
-            if run("exec", container, "pg_isready", "-U", "postgres", check=False).returncode == 0:
+            if run("exec", container, "pg_isready", "-h", "127.0.0.1", "-U", "postgres", check=False).returncode == 0:
                 break
             time.sleep(0.2)
         else:
